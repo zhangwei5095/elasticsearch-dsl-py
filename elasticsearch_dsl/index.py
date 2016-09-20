@@ -9,6 +9,13 @@ class Index(object):
         self._using = using
         self._settings = {}
         self._aliases = {}
+        self._analysis = {}
+
+    def clone(self, name, using=None):
+        i = Index(name, using=using or self._using)
+        for attr in ('_doc_types', '_mappings', '_settings', '_aliases'):
+            setattr(i, attr, getattr(self, attr).copy())
+        return i
 
     def _get_connection(self):
         return connections.get_connection(self._using)
@@ -31,6 +38,17 @@ class Index(object):
         self._aliases.update(kwargs)
         return self
 
+    def analyzer(self, analyzer):
+        d = analyzer.get_analysis_definition()
+        # empty custom analyzer, probably already defined out of our control
+        if not d:
+            return
+
+        # merge the definition
+        # TODO: conflict detection/resolution
+        for key in d:
+            self._analysis.setdefault(key, {}).update(d[key])
+
     def search(self):
         return Search(
             using=self._using,
@@ -43,7 +61,7 @@ class Index(object):
         for mapping in self._mappings.values():
             mappings.update(mapping.to_dict())
             a = mapping._collect_analysis()
-            # merge the defintion
+            # merge the definition
             # TODO: conflict detection/resolution
             for key in a:
                 analysis.setdefault(key, {}).update(a[key])
@@ -59,9 +77,26 @@ class Index(object):
         mappings, analysis = self._get_mappings()
         if mappings:
             out['mappings'] = mappings
-        if analysis:
+        if analysis or self._analysis:
+            for key in self._analysis:
+                analysis.setdefault(key, {}).update(self._analysis[key])
             out.setdefault('settings', {})['analysis'] = analysis
         return out
+
+    def exists(self, **kwargs):
+        return self.connection.indices.exists(index=self._name, **kwargs)
+
+    def refresh(self, **kwargs):
+        return self.connection.indices.refresh(index=self._name, **kwargs)
+
+    def flush(self, **kwargs):
+        return self.connection.indices.flush(index=self._name, **kwargs)
+
+    def open(self, **kwargs):
+        return self.connection.indices.open(index=self._name, **kwargs)
+
+    def close(self, **kwargs):
+        return self.connection.indices.close(index=self._name, **kwargs)
 
     def create(self, **kwargs):
         self.connection.indices.create(index=self._name, body=self.to_dict(), **kwargs)

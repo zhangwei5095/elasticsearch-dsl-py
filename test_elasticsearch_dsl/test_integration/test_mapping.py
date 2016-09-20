@@ -66,6 +66,8 @@ def test_mapping_gets_updated_from_es(write_client):
             'settings': {'number_of_shards': 1, 'number_of_replicas': 0},
             'mappings': {
                 'my_doc': {
+                    'date_detection': False,
+                    '_all': {'enabled': False},
                     'properties': {
                         'title': {
                             'type': 'string',
@@ -99,15 +101,17 @@ def test_mapping_gets_updated_from_es(write_client):
     assert ['comments', 'created_at', 'title'] == list(sorted(m.properties.properties._d_.keys()))
     assert {
         'my_doc': {
+            'date_detection': False,
+            '_all': {'enabled': False},
             'properties': {
                 'comments': {
                     'type': 'nested',
                     'properties': {
-                        'created': {'type': 'date', 'format': 'dateOptionalTime'},
+                        'created': {'type': 'date', 'format': 'strict_date_optional_time||epoch_millis'},
                         'author': {'analyzer': 'snowball', 'fields': {'raw': {'index': 'not_analyzed', 'type': 'string'}}, 'type': 'string'}
                     },
                 },
-                'created_at': {'format': 'dateOptionalTime', 'type': 'date'},
+                'created_at': {'format': 'strict_date_optional_time||epoch_millis', 'type': 'date'},
                 'title': {'analyzer': 'snowball', 'fields': {'raw': {'index': 'not_analyzed', 'type': 'string'}}, 'type': 'string'}
             }
         }

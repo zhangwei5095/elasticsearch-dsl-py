@@ -1,5 +1,16 @@
-
 from .utils import DslBase, _make_dsl_class
+
+__all__ = [
+    'A', 'Agg', 'Filter', 'Bucket', 'Children', 'DateHistogram', 'Filters',
+    'GeoDistance', 'GeohashGrid', 'Global', 'Histogram', 'Iprange', 'Missing',
+    'Nested', 'Range', 'ReverseNested', 'SignificantTerms', 'Terms', 'Avg',
+    'Cardinality', 'ExtendedStats', 'GeoBounds', 'Max', 'Min', 'Percentiles',
+    'PercentileRanks', 'ScriptedMetric', 'Stats', 'Sum', 'TopHits', 'ValueCount',
+    'AvgBucket', 'BucketScript', 'BucketSelector', 'CumulativeSum',
+    'Derivative', 'ExtendedStatsBucket', 'MaxBucket', 'MinBucket', 'MovingAvg',
+    'PercentilesBucket', 'SerialDiff', 'StatsBucket', 'SumBucket', 'Sampler'
+]
+
 
 def A(name_or_agg, filter=None, **params):
     if filter is not None:
@@ -15,7 +26,7 @@ def A(name_or_agg, filter=None, **params):
         agg = name_or_agg.copy()
         # pop out nested aggs
         aggs = agg.pop('aggs', None)
-        # should be {"terms": {"fied": "tags"}}
+        # should be {"terms": {"field": "tags"}}
         if len(agg) != 1:
             raise ValueError('A() can only accept dict with an aggregation ({"terms": {...}}). '
                  'Instead it got (%r)' % name_or_agg)
@@ -38,6 +49,12 @@ class Agg(DslBase):
     _type_name = 'agg'
     _type_shortcut = staticmethod(A)
     name = None
+    def to_dict(self):
+        d = super(Agg, self).to_dict()
+        if 'meta' in d[self.name]:
+            d['meta'] = d[self.name].pop('meta')
+        return d
+
 
 class AggBase(object):
     _param_defs = {
@@ -58,7 +75,7 @@ class AggBase(object):
     def __setitem__(self, agg_name, agg):
         self.aggs[agg_name] = A(agg)
 
-    def _agg(self, bucket, name, agg_type, *args,**params):
+    def _agg(self, bucket, name, agg_type, *args, **params):
         agg = self[name] = A(agg_type, *args, **params)
 
         # For chaining - when creating new buckets return them...
@@ -73,6 +90,9 @@ class AggBase(object):
 
     def bucket(self, name, agg_type, *args, **params):
         return self._agg(True, name, agg_type, *args, **params)
+
+    def pipeline(self, name, agg_type, *args, **params):
+        return self._agg(False, name, agg_type, *args, **params)
 
 
 class Bucket(AggBase, Agg):
@@ -90,7 +110,7 @@ class Bucket(AggBase, Agg):
 class Filter(Bucket):
     name = 'filter'
     _param_defs = {
-        'filter': {'type': 'filter'},
+        'filter': {'type': 'query'},
         'aggs': {'type': 'agg', 'hash': True},
     }
 
@@ -104,13 +124,17 @@ class Filter(Bucket):
         d[self.name].update(d[self.name].pop('filter', {}))
         return d
 
+class Pipeline(Agg):
+    pass
+
 AGGS = (
     (Bucket, 'children', None),
     (Bucket, 'date_histogram', None),
     (Bucket, 'date_range', None),
-    (Bucket, 'filters', {'filters': {'type': 'filter', 'hash': True}}),
+    (Bucket, 'filters', {'filters': {'type': 'query', 'hash': True}}),
     (Bucket, 'geo_distance', None),
     (Bucket, 'geohash_grid', None),
+    (Bucket, 'geo_centroid', None),
     (Bucket, 'global', None),
     (Bucket, 'histogram', None),
     (Bucket, 'iprange', None),
@@ -120,6 +144,7 @@ AGGS = (
     (Bucket, 'reverse_nested', None),
     (Bucket, 'significant_terms', None),
     (Bucket, 'terms', None),
+    (Bucket, 'sampler', None),
 
     (Agg, 'avg', None),
     (Agg, 'cardinality', None),
@@ -134,9 +159,23 @@ AGGS = (
     (Agg, 'sum', None),
     (Agg, 'top_hits', None),
     (Agg, 'value_count', None),
+
+    (Pipeline, 'avg_bucket', None),
+    (Pipeline, 'bucket_script', None),
+    (Pipeline, 'bucket_selector', None),
+    (Pipeline, 'cumulative_sum', None),
+    (Pipeline, 'derivative', None),
+    (Pipeline, 'extended_stats_bucket', None),
+    (Pipeline, 'max_bucket', None),
+    (Pipeline, 'min_bucket', None),
+    (Pipeline, 'moving_avg', None),
+    (Pipeline, 'percentiles_bucket', None),
+    (Pipeline, 'serial_diff', None),
+    (Pipeline, 'stats_bucket', None),
+    (Pipeline, 'sum_bucket', None),
 )
 
-# generate the aggregation classes dynamicaly
+# generate the aggregation classes dynamically
 for base, fname, params_def in AGGS:
     # don't override the params def from AggBase
     if params_def:

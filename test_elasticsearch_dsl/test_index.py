@@ -1,4 +1,4 @@
-from elasticsearch_dsl import DocType, Index, String, Date
+from elasticsearch_dsl import DocType, Index, String, Date, analyzer
 
 from random import choice
 
@@ -14,6 +14,18 @@ def test_search_is_limited_to_index_name():
     s = i.search()
 
     assert s._index == ['my-index']
+
+def test_cloned_index_has_copied_settings_and_using():
+    client = object()
+    i = Index('my-index', using=client)
+    i.settings(number_of_shards=1)
+
+    i2 = i.clone('my-other-index')
+
+    assert 'my-other-index' == i2._name
+    assert client is i2._using
+    assert i._settings == i2._settings
+    assert i._settings is not i2._settings
 
 def test_settings_are_saved():
     i = Index('i')
@@ -70,3 +82,22 @@ def test_aliases_returned_from_to_dict():
     index.aliases(**alias_dict)
 
     assert index._aliases == index.to_dict()['aliases'] == alias_dict
+
+
+def test_analyzers_added_to_object():
+    random_analyzer_name = ''.join((choice(string.ascii_letters) for _ in range(100)))
+    random_analyzer = analyzer(random_analyzer_name, tokenizer="standard", filter="standard")
+
+    index = Index('i', using='alias')
+    index.analyzer(random_analyzer)
+
+    assert index._analysis["analyzer"][random_analyzer_name] == {"filter": ["standard"], "type": "custom", "tokenizer": "standard"}
+
+
+def test_analyzers_returned_from_to_dict():
+    random_analyzer_name = ''.join((choice(string.ascii_letters) for _ in range(100)))
+    random_analyzer = analyzer(random_analyzer_name, tokenizer="standard", filter="standard")
+    index = Index('i', using='alias')
+    index.analyzer(random_analyzer)
+
+    assert index.to_dict()["settings"]["analysis"]["analyzer"][random_analyzer_name] == {"filter": ["standard"], "type": "custom", "tokenizer": "standard"}

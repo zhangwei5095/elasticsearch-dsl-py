@@ -1,4 +1,4 @@
-from elasticsearch_dsl import aggs, filter
+from elasticsearch_dsl import aggs, query
 
 from pytest import raises
 
@@ -7,6 +7,16 @@ def test_repr():
     a = aggs.A('terms', field='tags', aggs={'max_score': max_score})
 
     assert "Terms(aggs={'max_score': Max(field='score')}, field='tags')" == repr(a)
+
+def test_meta():
+    max_score = aggs.Max(field='score')
+    a = aggs.A('terms', field='tags', aggs={'max_score': max_score}, meta={'some': 'metadata'})
+
+    assert {
+        'terms': {'field': 'tags'},
+        'aggs': {'max_score': {'max': {'field': 'score'}}},
+        'meta': {'some': 'metadata'}
+    } == a.to_dict()
 
 def test_A_creates_proper_agg():
     a = aggs.A('terms', field='tags')
@@ -116,7 +126,7 @@ def test_nested_buckets_are_settable_as_getitem():
     assert a.aggs['per_author'] is b
 
 def test_filter_can_be_instantiated_using_positional_args():
-    a = aggs.Filter(filter.F('term', f=42))
+    a = aggs.Filter(query.Q('term', f=42))
 
     assert {
         'filter': {
@@ -124,11 +134,11 @@ def test_filter_can_be_instantiated_using_positional_args():
         }
     } == a.to_dict()
 
-    assert a == aggs.A('filter', filter.F('term', f=42))
+    assert a == aggs.A('filter', query.Q('term', f=42))
 
 def test_filter_aggregation_as_nested_agg():
     a = aggs.Terms(field='tags')
-    a.bucket('filtered', 'filter', filter.F('term', f=42))
+    a.bucket('filtered', 'filter', query.Q('term', f=42))
 
     assert {
         'terms': {'field': 'tags'},
@@ -142,7 +152,7 @@ def test_filter_aggregation_as_nested_agg():
     } == a.to_dict()
 
 def test_filter_aggregation_with_nested_aggs():
-    a = aggs.Filter(filter.F('term', f=42))
+    a = aggs.Filter(query.Q('term', f=42))
     a.bucket('testing', 'terms', field='tags')
 
     assert {
@@ -165,4 +175,8 @@ def test_filters_correctly_identifies_the_hash():
             }
         }
     } == a.to_dict()
-    assert a.filters.group_a == filter.F('term', group='a')
+    assert a.filters.group_a == query.Q('term', group='a')
+
+def test_import__all__():
+    for name in aggs.__all__:
+        assert hasattr(aggs, name)

@@ -26,7 +26,7 @@ def _make_dsl_class(base, name, params_def=None, suffix=''):
 
 class AttrList(object):
     def __init__(self, l, obj_wrapper=None):
-        # make iteables into lists
+        # make iterables into lists
         if not isinstance(l, list):
             l = list(l)
         self._l_ = l
@@ -40,6 +40,9 @@ class AttrList(object):
             return other._l_ == self._l_
         # make sure we still equal to a dict with the same data
         return other == self._l_
+
+    def __ne__(self, other):
+        return not self == other
 
     def __getitem__(self, k):
         l = self._l_[k]
@@ -62,6 +65,12 @@ class AttrList(object):
 
     def __getattr__(self, name):
         return getattr(self._l_, name)
+
+    def __getstate__(self):
+        return (self._l_, self._obj_wrapper)
+
+    def __setstate__(self, state):
+        self._l_, self._obj_wrapper = state
 
 
 class AttrDict(object):
@@ -91,18 +100,20 @@ class AttrDict(object):
         # make sure we still equal to a dict with the same data
         return other == self._d_
 
+    def __ne__(self, other):
+        return not self == other
+
     def __repr__(self):
         r = repr(self._d_)
         if len(r) > 60:
             r = r[:60] + '...}'
         return r
 
-    def get(self, key, default=None):
-        # Don't confuse `obj.get('...')` as `obj['get']`.
-        try:
-            return self._d_[key]
-        except KeyError:
-            return default
+    def __getstate__(self):
+        return (self._d_, )
+
+    def __setstate__(self, state):
+        super(AttrDict, self).__setattr__('_d_', state[0])
 
     def __getattr__(self, attr_name):
         try:
@@ -165,7 +176,7 @@ class DslMeta(type):
             # and create a registry for subclasses
             if not hasattr(cls, '_classes'):
                 cls._classes = {}
-        else:
+        elif cls.name not in cls._classes:
             # normal class, register it
             cls._classes[cls.name] = cls
 
@@ -189,7 +200,7 @@ class DslBase(object):
         - to_dict method to serialize into dict (to be sent via elasticsearch-py)
         - basic logical operators (&, | and ~) using a Bool(Filter|Query) TODO:
           move into a class specific for Query/Filter
-        - respects the definiton of the class and (de)serializes it's
+        - respects the definition of the class and (de)serializes it's
           attributes based on the `_param_defs` definition (for example turning
           all values in the `must` attribute into Query objects)
     """
@@ -200,12 +211,12 @@ class DslBase(object):
         try:
             return cls._classes[name]
         except KeyError:
-            raise UnknownDslObject('DSL class %s does not exist in %s.' % (name, cls._type_name))
+            raise UnknownDslObject('DSL class `%s` does not exist in %s.' % (name, cls._type_name))
 
-    def __init__(self, **params):
+    def __init__(self, _expand__to_dot=True, **params):
         self._params = {}
         for pname, pvalue in iteritems(params):
-            if '__' in pname:
+            if '__' in pname and _expand__to_dot:
                 pname = pname.replace('__', '.')
             self._setattr(pname, pvalue)
 
@@ -227,6 +238,9 @@ class DslBase(object):
     def __eq__(self, other):
         return isinstance(other, self.__class__) and other.to_dict() == self.to_dict()
 
+    def __ne__(self, other):
+        return not self == other
+
     def __setattr__(self, name, value):
         if name.startswith('_'):
             return super(DslBase, self).__setattr__(name, value)
@@ -241,6 +255,8 @@ class DslBase(object):
                 # get the shortcut used to construct this type (query.Q, aggs.A, etc)
                 shortcut = self.__class__.get_dsl_type(pinfo['type'])
                 if pinfo.get('multi'):
+                    if not isinstance(value, (tuple, list)):
+                        value = (value, )
                     value = list(map(shortcut, value))
 
                 # dict(name -> DslBase), make sure we pickup all the objs
@@ -289,7 +305,7 @@ class DslBase(object):
             # typed param
             if pinfo and 'type' in pinfo:
                 # don't serialize empty lists and dicts for typed fields
-                if not value:
+                if value in ({}, []):
                     continue
 
                 # multi-values are serialized as list of dicts
@@ -314,103 +330,14 @@ class DslBase(object):
     def _clone(self):
         return self._type_shortcut(self.to_dict())
 
-    def __add__(self, other):
-        # make sure we give queries that know how to combine themselves
-        # preference
-        if hasattr(other, '__radd__'):
-            return other.__radd__(self)
-        return self._bool(must=[self, other])
-
-    def __invert__(self):
-        return self._bool(must_not=[self])
-
-    def __or__(self, other):
-        # make sure we give queries that know how to combine themselves
-        # preference
-        if hasattr(other, '__ror__'):
-            return other.__ror__(self)
-        return self._bool(should=[self, other])
-
-    def __and__(self, other):
-        # make sure we give queries that know how to combine themselves
-        # preference
-        if hasattr(other, '__rand__'):
-            return other.__rand__(self)
-        return self._bool(must=[self, other])
-
-
-class BoolMixin(object):
-    """
-    Mixin containing all the operator overrides for Bool queries and filters.
-    """
-    def __and__(self, other):
-        q = self._clone()
-        if isinstance(other, self.__class__):
-            q.must += other.must
-            q.must_not += other.must_not
-            if q.should and other.should:
-                should = []
-                for orig_should in (q.should, other.should):
-                    if len(orig_should) == 1:
-                        should.append(orig_should[0])
-                    else:
-                        should.append(self.__class__(should=orig_should))
-                q.should = should
-            else:
-                q.should += other.should
-        else:
-            q.must.append(other)
-        return q
-    __rand__ = __and__
-
-    def __add__(self, other):
-        q = self._clone()
-        if isinstance(other, self.__class__):
-            q.must += other.must
-            q.should += other.should
-            q.must_not += other.must_not
-        else:
-            q.must.append(other)
-        return q
-    __radd__ = __add__
-
-    def __or__(self, other):
-        if not (self.must or self.must_not):
-            # TODO: if only 1 in must or should, append the query instead of other
-            q = self._clone()
-            q.should.append(other)
-            return q
-
-        elif isinstance(other, self.__class__) and not (other.must or other.must_not):
-            # TODO: if only 1 in must or should, append the query instead of self
-            q = other._clone()
-            q.should.append(self)
-            return q
-
-        return self.__class__(should=[self, other])
-    __ror__ = __or__
-
-    def __invert__(self):
-        # special case for single negated query
-        if not (self.must or self.should) and len(self.must_not) == 1:
-            return self.must_not[0]._clone()
-
-        # bol without should, just flip must and must_not
-        elif not self.should:
-            q = self._clone()
-            q.must, q.must_not = q.must_not, q.must
-            return q
-
-        # TODO: should -> must_not.append(self.__class__(should=self.should)) ??
-        # queries with should just invert normally
-        return super(BoolMixin, self).__invert__()
-
 
 class ObjectBase(AttrDict):
     def __init__(self, **kwargs):
-        super(ObjectBase, self).__init__({})
-        for (k, v) in iteritems(kwargs):
-            setattr(self, k, v)
+        m = self._doc_type.mapping
+        for k in m:
+            if k in kwargs and m[k]._coerce:
+                kwargs[k] = m[k].deserialize(kwargs[k])
+        super(ObjectBase, self).__init__(kwargs)
 
     def __getattr__(self, name):
         try:
@@ -428,20 +355,22 @@ class ObjectBase(AttrDict):
 
     def __setattr__(self, name, value):
         if name in self._doc_type.mapping:
-            value = self._doc_type.mapping[name].to_python(value)
+            value = self._doc_type.mapping[name].deserialize(value)
         super(ObjectBase, self).__setattr__(name, value)
 
     def to_dict(self):
         out = {}
         for k, v in iteritems(self._d_):
-            if isinstance(v, (AttrList, list, tuple)):
-                v = [i.to_dict() if hasattr(i, 'to_dict') else i for i in v]
-            else:
-                v = v.to_dict() if hasattr(v, 'to_dict') else v
+            try:
+                f = self._doc_type.mapping[k]
+                if f._coerce:
+                    v = f.serialize(v)
+            except KeyError:
+                pass
 
             # don't serialize empty values
             # careful not to include numeric zeros
-            if not isinstance(v, (int, float)) and not v:
+            if v in ([], {}, None):
                 continue
 
             out[k] = v
@@ -451,11 +380,15 @@ class ObjectBase(AttrDict):
         errors = {}
         for name in self._doc_type.mapping:
             field = self._doc_type.mapping[name]
-            data = getattr(self, name, None)
+            data = self._d_.get(name, None)
             try:
+                # save the cleaned value
                 data = field.clean(data)
             except ValidationException as e:
                 errors.setdefault(name, []).append(e)
+
+            if name in self._d_ or data not in ([], {}, None):
+                self._d_[name] = data
 
         if errors:
             raise ValidationException(errors)
@@ -466,4 +399,16 @@ class ObjectBase(AttrDict):
     def full_clean(self):
         self.clean_fields()
         self.clean()
+
+def merge(data, new_data):
+    if not (isinstance(data, (AttrDict, dict))
+            and isinstance(new_data, (AttrDict, dict))):
+        raise ValueError('You can only merge two dicts! Got %r and %r instead.' % (data, new_data))
+
+    for key, value in iteritems(new_data):
+        if key in data and isinstance(data[key], (AttrDict, dict)):
+            merge(data[key], value)
+        else:
+            data[key] = value
+
 

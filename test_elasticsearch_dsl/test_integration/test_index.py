@@ -8,6 +8,11 @@ class User(DocType):
     username = String(index='not_analyzed')
     joined_date = Date()
 
+def test_index_exists(write_client):
+
+    assert Index('git').exists()
+    assert not Index('not-there').exists()
+
 def test_index_can_be_created_with_settings_and_mappings(write_client):
     i = Index('test-blog', using=write_client)
     i.doc_type(Post)
@@ -21,13 +26,13 @@ def test_index_can_be_created_with_settings_and_mappings(write_client):
                 'post': {
                     'properties': {
                         'title': {'type': 'string', 'analyzer': 'my_analyzer'},
-                        'published_from': {'type': 'date', 'format': 'dateOptionalTime',},
+                        'published_from': {'type': 'date', 'format': 'strict_date_optional_time||epoch_millis',},
                     }
                 },
                 'user': {
                     'properties': {
                         'username': {'type': 'string', 'index': 'not_analyzed'},
-                        'joined_date': {'type': 'date', 'format': 'dateOptionalTime',},
+                        'joined_date': {'type': 'date', 'format': 'strict_date_optional_time||epoch_millis',},
                     }
                 },
             }
@@ -55,3 +60,22 @@ def test_delete(write_client):
     i = Index('test-index', using=write_client)
     i.delete()
     assert not write_client.indices.exists(index='test-index')
+
+def test_multiple_indices_with_same_doc_type_work(write_client):
+    i1 = Index('test-index-1', using=write_client)
+    i2 = Index('test-index-2', using=write_client)
+
+    for i in (i1, i2):
+        i.doc_type(Post)
+        i.create()
+
+    for i in ('test-index-1', 'test-index-2'):
+        settings = write_client.indices.get_settings(index=i)
+        assert settings[i]['settings']['index']['analysis'] == {
+            'analyzer': {
+                'my_analyzer': {
+                    'type': 'custom',
+                    'tokenizer': 'keyword'
+                }
+            }
+        }

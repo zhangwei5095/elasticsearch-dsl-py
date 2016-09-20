@@ -1,6 +1,45 @@
 from copy import deepcopy
 
-from elasticsearch_dsl import search, query, F, Q, DocType
+from elasticsearch_dsl import search, query, Q, DocType, utils
+
+
+def test_execute_uses_cache():
+    s = search.Search()
+    r = object()
+    s._response = r
+
+    assert r is s.execute()
+
+def test_cache_can_be_ignored(mock_client):
+    s = search.Search(using='mock')
+    r = object()
+    s._response = r
+    s.execute(ignore_cache=True)
+
+    mock_client.search.assert_called_once_with(
+        doc_type=[],
+        index=None,
+        body={'query': {'match_all': {}}},
+    )
+
+def test_iter_iterates_over_hits():
+    s = search.Search()
+    s._response = [1, 2, 3]
+
+    assert [1, 2, 3] == list(s)
+
+def test_count_uses_cache():
+    s = search.Search()
+    s._response = utils.AttrDict({'hits': {'total': 42}})
+
+    assert 42 == s.count()
+
+def test_cache_isnt_cloned():
+    s = search.Search()
+    s._response = object()
+
+    assert not hasattr(s._clone(), '_response')
+
 
 def test_search_starts_with_empty_query():
     s = search.Search()
@@ -39,19 +78,6 @@ def test_query_can_be_wrapped():
             }
         }
     }== s.to_dict()
-
-def test_filter_can_be_overriden():
-    s = search.Search().filter('term', tag='python')
-    s.filter = ~F(s.filter)
-
-    assert {
-        "query": {
-            "filtered": {
-                "query": {"match_all": {}},
-                "filter": {"bool": {"must_not": [{"term": {"tag": "python"}}]}}
-            }
-        }
-    } == s.to_dict()
 
 def test_using():
     o = object()
@@ -204,7 +230,7 @@ def test_complex_example():
     s = search.Search()
     s = s.query('match', title='python') \
         .query(~Q('match', title='ruby')) \
-        .filter(F('term', category='meetup') | F('term', category='conference')) \
+        .filter(Q('term', category='meetup') | Q('term', category='conference')) \
         .post_filter('terms', tags=['prague', 'czech']) \
         .script_fields(more_attendees="doc['attendees'].value + 42")
 
@@ -217,22 +243,20 @@ def test_complex_example():
 
     assert {
         'query': {
-            'filtered': {
-                'filter': {
-                    'bool': {
-                        'should': [
-                            {'term': {'category': 'meetup'}},
-                            {'term': {'category': 'conference'}}
-                        ]
+            'bool': {
+                'filter': [
+                    {
+                        'bool': {
+                            'should': [
+                                {'term': {'category': 'meetup'}},
+                                {'term': {'category': 'conference'}}
+                            ]
+                        }
                     }
-                },
-                'query': {
-                    'bool': {
-                        'must': [ {'match': {'title': 'python'}}],
-                        'must_not': [{'match': {'title': 'ruby'}}],
-                        'minimum_should_match': 2
-                    }
-                }
+                ],
+                'must': [ {'match': {'title': 'python'}}],
+                'must_not': [{'match': {'title': 'ruby'}}],
+                'minimum_should_match': 2
             }
         },
         'post_filter': {
@@ -338,7 +362,7 @@ def test_from_dict_doesnt_need_query():
     } == s.to_dict()
 
 def test_params_being_passed_to_search(mock_client):
-    s = search.Search('mock')
+    s = search.Search(using='mock')
     s = s.params(routing='42')
     s.execute()
 
@@ -348,6 +372,46 @@ def test_params_being_passed_to_search(mock_client):
         body={'query': {'match_all': {}}},
         routing='42'
     )
+
+def test_source():
+    assert {
+        'query': {
+            'match_all': {}
+        },
+    } == search.Search().source().to_dict()
+
+    assert {
+        '_source': {
+            'include': ['foo.bar.*'],
+            'exclude': ['foo.one']
+        },
+        'query': {
+            'match_all': {}
+        }
+    } == search.Search().source(include=['foo.bar.*'], exclude=['foo.one']).to_dict()
+
+def test_source_on_clone():
+    assert {
+        '_source': {
+            'include': ['foo.bar.*'],
+            'exclude': ['foo.one']
+        },
+        'query': {
+            'bool': {
+                'filter': [{'term': {'title': 'python'}}],
+            }
+        }
+    } == search.Search().source(include=['foo.bar.*']).\
+        source(exclude=['foo.one']).\
+        filter('term', title='python').to_dict()\
+
+def test_source_on_clear():
+    assert {
+        'query': {
+            'match_all': {}
+        }
+    } == search.Search().source(include=['foo.bar.*']).\
+        source(include=None, exclude=None).to_dict()
 
 def test_fields():
     assert {
@@ -382,13 +446,89 @@ def test_fields():
 def test_fields_on_clone():
     assert {
         'query': {
-            'filtered': {
-                'filter': {'term': {'title': 'python'}},
-                'query': {'match_all': {}}
+            'bool': {
+                'filter': [{'term': {'title': 'python'}}],
             }
         },
         'fields': ['title']
     } == search.Search().fields(['title']).filter('term', title='python').to_dict()
+
+def test_partial_fields():
+    assert {
+        'query': {
+            'match_all': {}
+        },
+    } == search.Search().partial_fields().to_dict()
+
+    assert {
+        'query': {
+            'match_all': {}
+        },
+        'partial_fields': {
+            'foo': {
+                'include': ['foo.bar.*'],
+                'exclude': ['foo.one']
+            }
+        }
+    } == search.Search().partial_fields(foo={
+        'include': ['foo.bar.*'],
+        'exclude': ['foo.one']
+    }).to_dict()
+
+    assert {
+        'query': {
+            'match_all': {}
+        },
+        'partial_fields': {
+            'foo': {
+                'include': ['foo.bar.*'],
+                'exclude': ['foo.one'],
+            },
+            'bar': {
+                'include': ['bar.bar.*'],
+            }
+        }
+    } == search.Search().partial_fields(foo={
+        'include': ['foo.bar.*'],
+        'exclude': ['foo.one']
+    }, bar={
+        'include': ['bar.bar.*']
+    }).to_dict()
+
+    assert {
+        'query': {
+            'match_all': {}
+        },
+        'partial_fields': {
+            'bar': {
+                'include': ['bar.*'],
+            }
+        }
+    } == search.Search().partial_fields(foo={
+        'include': ['foo.bar.*']
+    }).partial_fields(bar={
+        'include': ['bar.*']
+    }).to_dict()
+
+def test_partial_fields_on_clone():
+    assert {
+        'query': {
+            'bool': {
+                'filter': [
+                    {'term': { 'title': 'python'}},
+                ]
+            }
+        },
+        'partial_fields': {
+            'foo': {
+                'include': ['foo.bar.*'],
+                'exclude': ['foo.one']
+            }
+        }
+    } == search.Search().partial_fields(foo={
+        'include': ['foo.bar.*'],
+        'exclude': ['foo.one']
+    }).filter('term', title='python').to_dict()
 
 def test_suggest_accepts_global_text():
     s = search.Search.from_dict({

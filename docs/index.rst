@@ -17,6 +17,31 @@ document data in user-defined classes.
 To use the other Elasticsearch APIs (eg. cluster health) just use the
 underlying client.
 
+Compatibility
+-------------
+
+The library is compatible with all Elasticsearch versions since ``1.x`` but you
+**have to use a matching major version**:
+
+For **Elasticsearch 2.0** and later, use the major version 2 (``2.x.y``) of the
+library.
+
+For **Elasticsearch 1.0** and later, use the major version 0 (``0.x.y``) of the
+library.
+
+
+The recommended way to set your requirements in your `setup.py` or
+`requirements.txt` is::
+
+    # Elasticsearch 2.x
+    elasticsearch-dsl>=2.0.0,<3.0.0
+
+    # Elasticsearch 1.x
+    elasticsearch-dsl<2.0.0
+
+
+The development is happening on ``master`` and ``1.x`` branches, respectively.
+
 Search Example
 --------------
 
@@ -137,7 +162,7 @@ Let's have a simple Python class representing an article in a blogging system:
     Article.init()
 
     # create and save and article
-    article = Article(id=42, title='Hello world!', tags=['test'])
+    article = Article(meta={'id': 42}, title='Hello world!', tags=['test'])
     article.body = ''' looong text '''
     article.published_from = datetime.now()
     article.save()
@@ -167,6 +192,48 @@ In this example you can see:
   * accessing the underlying client for other APIs
 
 You can see more in the :ref:`persistence` chapter.
+
+
+Pre-built Faceted Search
+------------------------
+
+If you have your ``DocType``\ s defined you can very easily create a faceted
+search class to simplify searching and filtering.
+
+.. note::
+
+    This feature is experimental and may be subject to change.
+
+.. code:: python
+
+    from elasticsearch_dsl import FacetedSearch
+    from elasticsearch_dsl.aggs import Terms, DateHistogram
+
+    class BlogSearch(FacetedSearch):
+        doc_types = [Article, ]
+        # fields that should be searched
+        fields = ['tags', 'title', 'body']
+
+        facets = {
+            # use bucket aggregations to define facets
+            'tags': Terms(field='tags'),
+            'publishing_frequency': DateHistogram(field='published_from', interval='month')
+        }
+
+    # empty search
+    bs = BlogSearch()
+    response = bs.execute()
+
+    for hit in response:
+        print(hit.meta.score, hit.title)
+
+    for (tag, count, selected) in response.facets.tags:
+        print(tag, ' (SELECTED):' if selected else ':', count)
+
+    for (month, count, selected) in response.facets.publishing_frequency:
+        print(month.strftime('%B %Y'), ' (SELECTED):' if selected else ':', count)
+
+You can find more details in the :ref:`faceted_search` chapter.
 
 Migration from ``elasticsearch-py``
 -----------------------------------
@@ -216,5 +283,6 @@ Contents
    configuration
    search_dsl
    persistence
+   faceted_search
    Changelog
 

@@ -108,7 +108,8 @@ If you want to create a model-like wrapper around your documents, use the
 .. code:: python
 
     from datetime import datetime
-    from elasticsearch_dsl import DocType, String, Date, Nested, Boolean, analysis
+    from elasticsearch_dsl import DocType, String, Date, Nested, Boolean, \
+        analyzer, InnerObjectWrapper, Completion
 
     html_strip = analyzer('html_strip',
         tokenizer="standard",
@@ -116,8 +117,13 @@ If you want to create a model-like wrapper around your documents, use the
         char_filter=["html_strip"]
     )
 
+    class Comment(InnerObjectWrapper):
+        def age(self):
+            return datetime.now() - self.created_at
+
     class Post(DocType):
         title = String()
+        title_suggest = Completion(payloads=True)
         created_at = Date()
         published = Boolean()
         category = String(
@@ -126,6 +132,7 @@ If you want to create a model-like wrapper around your documents, use the
         )
 
         comments = Nested(
+            doc_class=Comment,
             properties={
                 'author': String(fields={'raw': String(index='not_analyzed')}),
                 'content': String(analyzer='snowball'),
@@ -147,6 +154,15 @@ If you want to create a model-like wrapper around your documents, use the
 
 Document life cycle
 ~~~~~~~~~~~~~~~~~~~
+
+Before you first use the ``Post`` document type, you need to create the
+mappings in Elasticsearch. For that you can either use the :ref:`index` object
+or create the mappings directly by calling the ``init`` class method:
+
+.. code:: python
+
+    # create the mappings in Elasticsearch
+    Post.init()
 
 To create a new ``Post`` document just instantiate the class and pass in any
 fields you wish to set, you can then use standard attribute setting to
@@ -178,8 +194,8 @@ variant:
     # prints 42, same as post._id
     print(post.meta.id)
 
-    # override default index
-    post._index = 'my-blog'
+    # override default index, same as post._index
+    post.meta.index = 'my-blog'
 
 .. note::
 
@@ -199,14 +215,40 @@ To retrieve an existing document use the ``get`` class method:
     # and save the changes into the cluster again
     first.save()
 
+    # you can also update just individual fields which will call the update API
+    # and also update the document in place
+    first.update(published=True, published_by='me')
+
 If the document is not found in elasticsearch an exception
 (``elasticsearch.NotFoundError``) will be raised. If you wish to return
-``None`` instead just pass in ``ignore=404`` to supress the exception:
+``None`` instead just pass in ``ignore=404`` to suppress the exception:
 
 .. code:: python
 
     p = Post.get(id='not-in-es', ignore=404)
     p is None
+
+When you wish to retrive multiple documents at the same time by their ``id``
+you can use the ``mget`` method:
+
+.. code:: python
+
+    posts = Post.mget([42, 47, 256])
+
+``mget`` will, by default, raise a ``NotFoundError`` if any of the documents
+wasn't found and ``RequestError`` if any of the document had resulted in error.
+You can control this behavior by setting parameters:
+
+``raise_on_error``
+  If ``True`` (default) then any error will cause an exception to be raised.
+  Otherwise all documents containing errors will be treated as missing.
+
+``missing``
+  Can have three possible values: ``'none'`` (default), ``'raise'`` and
+  ``'skip'``. If a document is missing or errored it will either be replaced
+  with ``None``, an exception will be raised or the document will be skipped in
+  the output list entirely.
+
 
 All the information about the ``DocType``, including its ``Mapping`` can be
 accessed through the ``_doc_type`` attribute of the class:
@@ -216,7 +258,7 @@ accessed through the ``_doc_type`` attribute of the class:
     # name of the type and index in elasticsearch
     Post._doc_type.name
     Post._doc_type.index
-    
+
     # the raw Mapping object
     Post._doc_type.mapping
 
@@ -231,6 +273,13 @@ example if you wish the ``Date`` fields to be properly (de)serialized):
 .. code:: python
 
     Post._doc_type.refresh()
+
+To delete a document just call its ``delete`` method:
+
+.. code:: python
+
+    first = Post.get(id=42)
+    first.delete()
 
 Search
 ~~~~~~
@@ -263,12 +312,22 @@ You can also combine document classes with standard doc types (just strings),
 which will be treated as before. You can also pass in multiple ``DocType``
 subclasses and each document in the response will be wrapped in it's class.
 
-To delete a document just call its ``delete`` method:
+If you want to run suggestions, just use the ``suggest`` method on the
+``Search`` object:
 
 .. code:: python
 
-    first = Post.get(id=42)
-    first.delete()
+    s = Post.search()
+    s = s.suggest('title_suggestions', 'pyth', completion={'field': 'title_suggest'})
+
+    # you can even execute just the suggestions via the _suggest API
+    suggestions = s.execute_suggest()
+
+    for result in suggestions.title_suggestions:
+        print('Suggestions for %s:' % result.text)
+        for option in result.options:
+            print('  %s (%r)' % (option.text, option.payload))
+
 
 ``class Meta`` options
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -304,6 +363,7 @@ to map and pass any parameters to the ``MetaField`` class:
         class Meta:
             all = MetaField(enabled=False)
             parent = MetaField(type='blog')
+            dynamic = MetaField('strict')
 
 .. _index:
 
@@ -318,7 +378,7 @@ in a migration:
 
 .. code:: python
 
-    from elasticsearch_dsl import Index, DocType, String
+    from elasticsearch_dsl import Index, DocType, String, analyzer
 
     blogs = Index('blogs')
 
@@ -341,8 +401,36 @@ in a migration:
     class Post(DocType):
         title = String()
 
+    # You can attach custom analyzers to the index
+
+    html_strip = analyzer('html_strip',
+        tokenizer="standard",
+        filter=["standard", "lowercase", "stop", "snowball"],
+        char_filter=["html_strip"]
+    )
+
+    blog.analyzer(html_strip)
+
     # delete the index, ignore if it doesn't exist
     blogs.delete(ignore=404)
 
     # create the index in elasticsearch
     blogs.create()
+
+You can also set up a template for your indices and use the ``clone`` method to
+create specific copies:
+
+.. code:: python
+
+    blogs = Index('blogs', using='production')
+    blogs.settings(number_of_shards=2)
+    blogs.doc_type(Post)
+
+    # create a copy of the index with different name
+    company_blogs = blogs.clone('company-blogs')
+
+    # create a different copy on different cluster
+    dev_blogs = blogs.clone('blogs', using='dev')
+    # and change its settings
+    dev_blogs.setting(number_of_shards=1)
+

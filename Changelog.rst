@@ -3,8 +3,55 @@
 Changelog
 =========
 
-0.0.5 (dev)
------------
+2.1.0 (2016-06-29)
+------------------
+ * ``inner_hits`` are now also wrapped in ``Response``
+ * ``+`` operator is deprecated, ``.query()`` now uses ``&`` to combine queries
+ * added ``mget`` method to ``DocType``
+ * fixed validation for "empty" values like ``''`` and ``[]``
+
+2.0.0 (2016-02-18)
+------------------
+Compatibility with Elasticsearch 2.x:
+
+ * Filters have been removed and additional queries have been added. Instead of
+   ``F`` objects you can now use ``Q``.
+ * ``Search.filter`` is now just a shortcut to add queries in filter context
+ * support for pipeline aggregations added
+
+Backwards incompatible changes:
+
+ * list of analysis objects and classes was removed, any string used as
+   tokenizer, char or token filter or analyzer will be treated as a builtin
+ * internal method ``Field.to_python`` has been renamed to ``deserialize`` and
+   an optional serialization mechanic for fields has been added.
+ * Custom response class is now set by ``response_class`` method instead of a
+   kwarg to ``Search.execute``
+
+Other changes:
+
+ * ``FacetedSearch`` now supports pagination via slicing
+
+0.0.10 (2016-01-24)
+-------------------
+ * ``Search`` can now be iterated over to get back hits
+ * ``Search`` now caches responses from Elasticsearch
+ * ``DateHistogramFacet`` now defaults to returning empty intervals
+ * ``Search`` no longer accepts positional parameters
+ * Experimental ``MultiSearch`` API
+ * added option to talk to ``_suggest`` endpoint (``execute_suggest``)
+
+0.0.9 (2015-10-26)
+------------------
+ * ``FacetedSearch`` now uses its own ``Facet`` class instead of built in
+   aggregations
+
+0.0.8 (2015-08-28)
+------------------
+ * ``0.0.5`` and ``0.0.6`` was released with broken .tar.gz on pypi, just a build fix
+
+0.0.5 (2015-08-27)
+------------------
  * added support for (index/search)_analyzer via #143, thanks @wkiser!
  * even keys accessed via ``['field']`` on ``AttrDict`` will be wrapped in
    ``Attr[Dict|List]`` for consistency
@@ -14,6 +61,9 @@ Changelog
  * ``AttributeError`` is no longer raised when accessing an empty field.
  * added ``required`` flag to fields and validation hooks to fields and
    (sub)documents
+ * removed ``get`` method from ``AttrDict``. Use ``getattr(d, key, default)``
+   instead.
+ * added ``FacetedSearch`` for easy declarative faceted navigation
 
 0.0.4 (2015-04-24)
 ------------------

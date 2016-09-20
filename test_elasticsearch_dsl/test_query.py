@@ -1,4 +1,4 @@
-from elasticsearch_dsl import query, function, filter
+from elasticsearch_dsl import query, function
 
 from pytest import raises
 
@@ -28,6 +28,16 @@ def test_bool_to_dict():
 
     assert {"bool": {"must": [{"match": {"f": "value"}}]}} == bool.to_dict()
 
+def test_bool_from_dict_issue_318():
+    d = {
+        "bool": {
+            "must_not": {"match": {"field": "value"}}
+        }
+    }
+    q = query.Q(d)
+
+    assert q == ~query.Match(field='value')
+
 def test_repr():
     bool = query.Bool(must=[query.Match(f='value')], should=[])
 
@@ -50,7 +60,7 @@ def test_bool_converts_its_init_args_to_queries():
 def test_two_queries_make_a_bool():
     q1 = query.Match(f='value1')
     q2 = query.Match(message={"query": "this is a test", "opeartor": "and"})
-    q = q1 + q2
+    q = q1 & q2
 
     assert isinstance(q, query.Bool)
     assert [q1, q2] == q.must
@@ -59,7 +69,7 @@ def test_other_and_bool_appends_other_to_must():
     q1 = query.Match(f='value1')
     qb = query.Bool()
 
-    q = q1 + qb
+    q = q1 & qb
     assert q is not qb
     assert q.must[0] == q1
 
@@ -67,19 +77,23 @@ def test_bool_and_other_appends_other_to_must():
     q1 = query.Match(f='value1')
     qb = query.Bool()
 
-    q = qb + q1
+    q = qb & q1
     assert q is not qb
     assert q.must[0] == q1
 
-def test_two_bools_are_combined():
-    q1 = query.Bool(must=[query.MatchAll(), query.Match(f=42)], should=[query.Match(g="v")])
-    q2 = query.Bool(must=[query.Match(x=42)], should=[query.Match(g="v2")], must_not=[query.Match(title='value')])
+def test_bool_and_other_sets_min_should_match_if_needed():
+    q1 = query.Q('term', category=1)
+    q2 = query.Q('bool', should=[
+        query.Q('term', name='aaa'),
+        query.Q('term', name='bbb')]
+    )
 
-    q = q1 + q2
-    assert isinstance(q, query.Bool)
-    assert q.must == [query.MatchAll(), query.Match(f=42), query.Match(x=42)]
-    assert q.should == [query.Match(g="v"), query.Match(g="v2")]
-    assert q.must_not == [query.Match(title='value')]
+    q = q1 & q2
+    assert q == query.Bool(
+        must=[q1],
+        should=[query.Q('term', name='aaa'), query.Q('term', name='bbb')],
+        minimum_should_match=1
+    )
 
 def test_query_and_query_creates_bool():
     q1 = query.Match(f=42)
@@ -101,17 +115,39 @@ def test_bool_and_bool():
 
     q1 = query.Bool(must=[qt1], should=[qt2])
     q2 = query.Bool(must_not=[qt3])
-    assert q1 & q2 == query.Bool(must=[qt1], must_not=[qt3], should=[qt2])
+    assert q1 & q2 == query.Bool(must=[qt1], must_not=[qt3], should=[qt2], minimum_should_match=0)
 
     q1 = query.Bool(must=[qt1], should=[qt1, qt2])
     q2 = query.Bool(should=[qt3])
-    assert q1 & q2 == query.Bool(must=[qt1], should=[query.Bool(should=[qt1, qt2]), qt3])
+    assert q1 & q2 == query.Bool(must=[qt1, qt3], should=[qt1, qt2], minimum_should_match=0)
 
 def test_inverted_query_becomes_bool_with_must_not():
     q = query.Match(f=42)
-    q = ~q
 
-    assert q == query.Bool(must_not=[query.Match(f=42)])
+    assert ~q == query.Bool(must_not=[query.Match(f=42)])
+
+def test_inverted_query_with_must_not_become_should():
+    q = query.Q('bool', must_not=[query.Q('match', f=1), query.Q('match', f=2)])
+
+    assert ~q == query.Q('bool', should=[query.Q('match', f=1), query.Q('match', f=2)])
+
+def test_inverted_query_with_must_and_must_not():
+    q = query.Q('bool',
+        must=[query.Q('match', f=3), query.Q('match', f=4)],
+        must_not=[query.Q('match', f=1), query.Q('match', f=2)]
+    )
+    print((~q).to_dict())
+    assert ~q == query.Q('bool',
+        should=[
+            # negation of must
+            query.Q('bool', must_not=[query.Q('match', f=3)]),
+            query.Q('bool', must_not=[query.Q('match', f=4)]),
+
+            # negation of must_not
+            query.Q('match', f=1),
+            query.Q('match', f=2),
+        ]
+    )
 
 def test_double_invert_returns_original_query():
     q = query.Match(f=42)
@@ -120,9 +156,15 @@ def test_double_invert_returns_original_query():
 
 def test_bool_query_gets_inverted_internally():
     q = query.Bool(must_not=[query.Match(f=42)], must=[query.Match(g='v')])
-    q = ~q
 
-    assert q == query.Bool(must=[query.Match(f=42)], must_not=[query.Match(g='v')])
+    assert ~q == query.Bool(
+        should=[
+            # negating must
+            query.Bool(must_not=[query.Match(g='v')]),
+            # negating must_not
+            query.Match(f=42),
+        ]
+    )
 
 def test_match_all_or_something_is_match_all():
     q1 = query.MatchAll()
@@ -148,11 +190,17 @@ def test_or_bool_doesnt_loop_infinitely_issue_96():
 
     assert q == query.Bool(should=[query.Bool(must_not=[query.Match(f=42)]), query.Bool(must_not=[query.Match(f=47)])])
 
-def test_bool_with_only_should_will_append_another_query_with_or():
-    qb = query.Bool(should=[query.Match(f='v')])
+def test_bool_will_append_another_query_with_or():
+    qb = query.Bool(should=[query.Match(f='v'), query.Match(f='v2'),])
     q = query.Match(g=42)
 
-    assert (q | qb) == query.Bool(should=[query.Match(f='v'), q])
+    assert (q | qb) == query.Bool(should=[query.Match(f='v'), query.Match(f='v2'), q])
+
+def test_bool_queries_with_only_should_get_concatenated():
+    q1 = query.Bool(should=[query.Match(f=1), query.Match(f=2),])
+    q2 = query.Bool(should=[query.Match(f=3), query.Match(f=4),])
+
+    assert (q1 | q2) == query.Bool(should=[query.Match(f=1), query.Match(f=2),query.Match(f=3), query.Match(f=4),])
 
 def test_two_bool_queries_append_one_to_should_if_possible():
     q1 = query.Bool(should=[query.Match(f='v')])
@@ -188,6 +236,11 @@ def test_Q_translates_double_underscore_to_dots_in_param_names():
 
     assert {'comment.author': 'honza'} == q._params
 
+def test_Q_doesn_translate_double_underscore_to_dots_in_param_names():
+    q = query.Q('match', comment__author='honza', _expand__to_dot=False)
+
+    assert {'comment__author': 'honza'} == q._params
+
 def test_Q_constructs_simple_query_from_dict():
     q = query.Q({'match': {'f': 'value'}})
 
@@ -221,12 +274,12 @@ def test_Q_raises_error_on_unknown_query():
     with raises(Exception):
         query.Q('not a query', f='value')
 
-def test_match_all_plus_anything_is_anything():
+def test_match_all_and_anything_is_anything():
     q = query.MatchAll()
 
     s = query.Match(f=42)
-    assert q+s == s
-    assert s+q == s
+    assert q&s == s
+    assert s&q == s
 
 def test_function_score_with_functions():
     q = query.Q('function_score', functions=[query.SF('script_score', script="doc['comment_count'] * _score")])
@@ -234,7 +287,7 @@ def test_function_score_with_functions():
     assert {'function_score': {'functions': [{'script_score': {'script': "doc['comment_count'] * _score"}}]}} == q.to_dict()
 
 def test_function_score_with_no_function_is_boost_factor():
-    q = query.Q('function_score', functions=[query.SF({'weight': 20, 'filter': filter.F('term', f=42)})])
+    q = query.Q('function_score', functions=[query.SF({'weight': 20, 'filter': query.Q('term', f=42)})])
 
     assert {'function_score': {'functions': [{'filter': {'term': {'f': 42}}, 'weight': 20}]}} == q.to_dict()
 
@@ -243,8 +296,8 @@ def test_function_score_to_dict():
         'function_score',
         query=query.Q('match', title='python'),
         functions=[
-            query.SF('random'),
-            query.SF('field_value_factor', field='comment_count', filter=filter.F('term', tags='python'))
+            query.SF('random_score'),
+            query.SF('field_value_factor', field='comment_count', filter=query.Q('term', tags='python'))
         ]
     )
 
@@ -252,7 +305,7 @@ def test_function_score_to_dict():
       'function_score': {
         'query': {'match': {'title': 'python'}},
         'functions': [
-          {'random': {}},
+          {'random_score': {}},
           {
             'filter': {'term': {'tags': 'python'}},
             'field_value_factor': {
@@ -263,7 +316,6 @@ def test_function_score_to_dict():
       }
     }
     assert d == q.to_dict()
-
 
 def test_function_score_with_single_function():
     d = {
@@ -277,13 +329,12 @@ def test_function_score_with_single_function():
 
     q = query.Q(d)
     assert isinstance(q, query.FunctionScore)
-    assert isinstance(q.filter, filter.Term)
+    assert isinstance(q.filter, query.Term)
     assert len(q.functions) == 1
 
     sf = q.functions[0]
     assert isinstance(sf, function.ScriptScore)
     assert "doc['comment_count'] * _score" == sf.script
-
 
 def test_function_score_from_dict():
     d = {
@@ -305,12 +356,12 @@ def test_function_score_from_dict():
 
     q = query.Q(d)
     assert isinstance(q, query.FunctionScore)
-    assert isinstance(q.filter, filter.Term)
+    assert isinstance(q.filter, query.Term)
     assert len(q.functions) == 2
 
     sf = q.functions[0]
     assert isinstance(sf, function.ScriptScore)
-    assert isinstance(sf.filter, filter.Terms)
+    assert isinstance(sf.filter, query.Terms)
 
     sf = q.functions[1]
     assert isinstance(sf, function.BoostFactor)
